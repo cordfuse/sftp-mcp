@@ -3,17 +3,20 @@
 [![CI](https://github.com/cordfuse/sftp-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/cordfuse/sftp-mcp/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@cordfuse/sftp-mcp)](https://www.npmjs.com/package/@cordfuse/sftp-mcp)
 
-**SFTP as a browsable, mutable filesystem for AI agents** — list, stat, move,
-mkdir, delete, batch, upload, download. Not just upload/download. Node runtime,
-served over both **stdio** and **streamable HTTP**, zero required native deps.
+**SFTP as a browsable, mutable filesystem for AI agents** — list, stat, lstat,
+realpath, move, mkdir, delete, batch, symlink, tree upload, disk usage. Not just
+upload/download. Node runtime, served over both **stdio** and **streamable
+HTTP**, zero required native deps. Ships with a **read-only mode** and **path
+jail** so it's safe to expose over a shared endpoint.
 
 > Most SFTP/SSH MCP servers are SSH-first: their file story is upload/download of
 > individual files bolted onto remote command execution. `sftp-mcp` treats the
 > remote as a **filesystem** — the operations that make it browsable and mutable.
 
 - [Quick start](#quick-start)
-- [Tool reference](#tool-reference) — [connection params](#connection-parameters-every-tool) · [the 11 tools](#the-tools)
+- [Tool reference](#tool-reference) — [connection params](#connection-parameters-every-tool) · [the 17 tools](#the-tools)
 - [Credentials & security](#credentials--100-per-call-zero-config)
+- [Hardening — read-only mode & path jail](#hardening--read-only-mode--path-jail)
 - [Responses, limits & errors](#responses-limits--errors)
 - [Transports](#transports) · [Docker](#docker--ghcr) · [Development](#development)
 
@@ -43,7 +46,7 @@ deploy"* and it will call `list_files` with the connection + path.
 
 ## Tool reference
 
-Eleven tools. Every tool is **self-contained**: each call carries its own
+Seventeen tools. Every tool is **self-contained**: each call carries its own
 connection details (there is no server-side config — see
 [Credentials](#credentials--100-per-call-zero-config)), so a single running
 server can address any number of SFTP hosts, switched call-to-call.
@@ -150,6 +153,59 @@ Metadata for a single path. Doubles as an existence check.
 
 ---
 
+#### `lstat`
+Like `stat`, but **does not follow a final symlink** — reports the link itself
+(`type: "symlink"`) rather than its target. Use it to detect symlinks; use `stat`
+to see what a link resolves to.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | **yes** | Remote path to lstat. |
+
+**Returns:** same shape as `stat`. For a symlink, `type` is `"symlink"` and
+`size` is the length of the target path string.
+
+---
+
+#### `realpath`
+Canonicalize a path — resolve `.`/`..` segments **and** symlinks to an absolute path.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | **yes** | Remote path to resolve. |
+
+**Returns:** `{ path: string, realpath: string }`
+
+```json
+{ "host": "sftp.example.com", "username": "deploy", "path": "/var/www/../www/current" }
+```
+
+---
+
+#### `read_symlink`
+Read the target a symbolic link points to (does not follow further).
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | string | **yes** | Symlink path to read. |
+
+**Returns:** `{ path: string, target: string }`
+
+---
+
+#### `disk_usage`
+Capacity of the filesystem holding a path — check free space before an upload.
+Uses the OpenSSH `statvfs@openssh.com` extension; errors with code `ENOSYS` if
+the server doesn't support it.
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `path` | string | no | `"."` | Any path on the target filesystem. |
+
+**Returns:** `{ totalBytes: number, freeBytes: number, availableBytes: number }`
+
+---
+
 #### `download_file`
 Download one file, base64-encoded.
 
@@ -210,6 +266,32 @@ Upload base64 data to a remote path.
 
 ---
 
+#### `upload_dir`
+Push a whole **directory tree** from in-memory files under a base directory,
+creating the base and any parent directories as needed (`mkdir -p`). Pairs with
+recursive `download_files` for full tree round-trips.
+
+| Param | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `path` | string | **yes** | — | Remote base directory (created if missing). |
+| `files` | `{ path: string, base64: string }[]` | **yes** | — | Files to write; each `path` is **relative to the base**. |
+| `maxTotalBytes` | number | no | `33554432` (32 MiB) | Cap on the **combined** size. |
+
+**Returns:** `{ count: number, written: { path: string, bytes: number }[] }`
+
+```json
+{
+  "host": "sftp.example.com", "username": "deploy",
+  "path": "/var/www/site",
+  "files": [
+    { "path": "index.html", "base64": "PGgxPmhpPC9oMT4=" },
+    { "path": "assets/app.css", "base64": "Ym9keXt9" }
+  ]
+}
+```
+
+---
+
 #### `delete_file`
 Delete a single file.
 
@@ -246,7 +328,8 @@ Create a directory.
 ---
 
 #### `move`
-Rename or move a file or directory.
+Rename or move a file or directory. Uses SFTP `posix-rename` — an **atomic**
+overwrite (no delete-then-rename race) when `overwrite` is set.
 
 | Param | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -274,6 +357,18 @@ Change a path's permission bits.
 | `mode` | string | **yes** | Octal permission string, e.g. `"644"` or `"755"`. |
 
 **Returns:** `{ ok: true, path: string, mode: string }`
+
+---
+
+#### `symlink`
+Create a symbolic link at `path` pointing to `target`.
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `target` | string | **yes** | The path the link points to. |
+| `path` | string | **yes** | Where to create the link. |
+
+**Returns:** `{ ok: true, path: string, target: string }`
 
 ---
 
@@ -316,6 +411,31 @@ stacks / internal paths leaked back to the model).
 
 ---
 
+## Hardening — read-only mode & path jail
+
+Two **launch flags** (operator-set, not per-call) let you expose the server —
+e.g. over a shared streamable-HTTP endpoint — without handing agents full write
+access to every path a credential can reach.
+
+| Flag | Env | Effect |
+|------|-----|--------|
+| `--read-only` | `SFTP_READONLY=1` | Refuse every mutating tool (`upload_file`, `upload_dir`, `delete_file`, `delete_dir`, `make_directory`, `move`, `chmod`, `symlink`) with error code `EROFS`. Read tools still work. |
+| `--allow <root>` | `SFTP_ALLOW=<root>[,<root>]` | Confine **all** paths to the given root(s). A path outside every root (after `.`/`..` normalization) is refused with `EACCES` before any connection is made. Repeat `--allow` for multiple roots. |
+
+```bash
+# A safe public read-only endpoint:
+npx @cordfuse/sftp-mcp --http --read-only
+
+# Writable, but jailed to /exports:
+npx @cordfuse/sftp-mcp --http --allow /exports
+```
+
+The flags compose — `--read-only --allow /exports` gives read-only access
+confined to `/exports`. They constrain what the *server* will do regardless of
+what credentials a call carries.
+
+---
+
 ## Responses, limits & errors
 
 - **Success** — the tool returns a JSON object/array (the "Returns" shape above),
@@ -325,11 +445,14 @@ stacks / internal paths leaked back to the model).
   transfers are **size-capped** (32 MiB default, per-call overridable via
   `maxBytes` / `maxTotalBytes`). For very large files this server is the wrong
   tool — it moves bytes through the agent, not disk-to-disk.
-- **Errors** — a failed op returns `isError: true` with a **sanitized,
-  single-line** message (credentials and stack traces are never included).
-  Guarded cases you'll see by design: existing-path on `upload_file`/`move`
-  without `overwrite`, oversize transfers, and non-empty `delete_dir` without
-  `recursive`.
+- **Errors** — a failed op returns `isError: true` and a JSON body
+  `{ code, message }` — a **structured code** so an agent can branch (rather than
+  string-match), plus a **sanitized, single-line** message (credentials and stack
+  traces are never included). Codes: `ENOENT` (no such path), `EACCES`
+  (permission denied / outside the [path jail](#hardening--read-only-mode--path-jail)),
+  `EEXIST` (exists without `overwrite`), `EROFS` ([read-only mode](#hardening--read-only-mode--path-jail)),
+  `EISDIR`, `ENOTDIR`, `ENOSYS` (unsupported extension, e.g. `disk_usage`),
+  `E2BIG` (over the size cap), `EINVAL`, `EFAILURE` (fallback).
 - **Connections** are opened per call and **always closed** (even on error), with
   the `timeoutMs` ready-timeout applied.
 

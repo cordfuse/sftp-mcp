@@ -5,25 +5,33 @@ import type { IncomingMessage } from "node:http";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import { createServer } from "./server.js";
+import { createServer, type ServerOptions } from "./server.js";
 
 interface Opts {
   http: boolean;
   port: number;
+  serverOptions: ServerOptions;
 }
 
 function parseArgs(argv: string[]): Opts {
   let http = false;
   let port = Number(process.env.PORT ?? 3901);
+  let readOnly = process.env.SFTP_READONLY === "1" || process.env.SFTP_READONLY === "true";
+  const allow: string[] = (process.env.SFTP_ALLOW ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--http") http = true;
     else if (argv[i] === "--port") port = Number(argv[++i]);
+    else if (argv[i] === "--read-only" || argv[i] === "--readonly") readOnly = true;
+    else if (argv[i] === "--allow") allow.push(argv[++i]);
   }
-  return { http, port };
+  return { http, port, serverOptions: { readOnly, allow } };
 }
 
-async function runStdio(): Promise<void> {
-  const server = createServer();
+async function runStdio(opts: Opts): Promise<void> {
+  const server = createServer(opts.serverOptions);
   await server.connect(new StdioServerTransport());
 }
 
@@ -42,7 +50,7 @@ function readBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-async function runHttp(port: number): Promise<void> {
+async function runHttp(port: number, serverOptions: ServerOptions): Promise<void> {
   // Stateful sessions: initialize mints an mcp-session-id; later requests route
   // back to the same server+transport; evicted on close.
   const transports = new Map<string, StreamableHTTPServerTransport>();
@@ -75,7 +83,7 @@ async function runHttp(port: number): Promise<void> {
         transport.onclose = () => {
           if (transport!.sessionId) transports.delete(transport!.sessionId);
         };
-        await createServer().connect(transport);
+        await createServer(serverOptions).connect(transport);
       }
 
       if (!transport) {
@@ -106,7 +114,7 @@ async function runHttp(port: number): Promise<void> {
 }
 
 const opts = parseArgs(process.argv.slice(2));
-(opts.http ? runHttp(opts.port) : runStdio()).catch((e) => {
+(opts.http ? runHttp(opts.port, opts.serverOptions) : runStdio(opts)).catch((e) => {
   console.error(e);
   process.exit(1);
 });

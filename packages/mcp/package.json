@@ -1,6 +1,6 @@
 {
   "name": "@cordfuse/sftp-mcp",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "SFTP as a browsable filesystem for AI agents (MCP): list, stat, move, mkdir, delete, batch, upload, download — not just upload/download. Node, stdio + streamable HTTP.",
   "type": "module",
   "bin": {

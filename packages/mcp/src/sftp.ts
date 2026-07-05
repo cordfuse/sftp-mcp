@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import Client from "ssh2-sftp-client";
 
 // --- connection model: 100% per-call, secret optional -----------------------
@@ -56,6 +57,46 @@ export function sanitizeError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
   // Collapse absolute host paths / stacks; keep the human-readable reason.
   return msg.split("\n")[0].slice(0, 300);
+}
+
+/** Make an Error carrying a string code (EEXIST, EACCES, …). */
+export function codedError(message: string, code: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+const SFTP_STATUS: Record<number, string> = {
+  2: "ENOENT",
+  3: "EACCES",
+  4: "EFAILURE",
+  5: "EBADMSG",
+  8: "ENOSYS",
+};
+
+/** Map any SFTP/ssh2 error (or our coded errors) to { code, message }. */
+export function errorInfo(e: unknown): { code: string; message: string } {
+  const message = sanitizeError(e);
+  const c = (e as { code?: unknown })?.code;
+  if (typeof c === "string" && /^E[A-Z0-9]+$/.test(c)) return { code: c, message };
+  if (typeof c === "number" && SFTP_STATUS[c]) return { code: SFTP_STATUS[c], message };
+  const m = message.toLowerCase();
+  if (m.includes("no such file")) return { code: "ENOENT", message };
+  if (m.includes("permission denied")) return { code: "EACCES", message };
+  if (m.includes("already exists")) return { code: "EEXIST", message };
+  if (m.includes("not a directory")) return { code: "ENOTDIR", message };
+  if (m.includes("is a directory")) return { code: "EISDIR", message };
+  return { code: "EFAILURE", message };
+}
+
+/** Coerce ssh2-sftp-client's isX (boolean or fn) into a FileType. */
+function statType(o: Record<string, unknown>): FileType {
+  const flag = (k: string) => {
+    const v = o[k];
+    return typeof v === "function" ? Boolean((v as () => boolean)()) : Boolean(v);
+  };
+  if (flag("isSymbolicLink")) return "symlink";
+  if (flag("isDirectory")) return "directory";
+  if (flag("isFile")) return "file";
+  return "other";
 }
 
 /**
@@ -187,7 +228,8 @@ export async function statPath(client: Client, path: string): Promise<StatResult
   const st = await client.stat(path);
   return {
     exists: true,
-    type: normType(kind as string),
+    // stat follows symlinks, so report the followed target's type (not lstat's).
+    type: statType(st as unknown as Record<string, unknown>),
     size: st.size,
     modifyTime: st.modifyTime,
     accessTime: st.accessTime,
@@ -240,9 +282,124 @@ export async function move(
   to: string,
   overwrite = false,
 ): Promise<void> {
-  if (await client.exists(to)) {
-    if (!overwrite) throw new Error(`${to} already exists; pass overwrite:true to replace it`);
-    await client.delete(to);
+  if (!overwrite && (await client.exists(to))) {
+    throw codedError(`${to} already exists; pass overwrite:true to replace it`, "EEXIST");
   }
-  await client.rename(from, to);
+  // posixRename is atomic and overwrites in place (no delete-then-rename race).
+  // Fall back to plain rename if the server lacks the posix-rename extension.
+  try {
+    await client.posixRename(from, to);
+  } catch {
+    if (overwrite && (await client.exists(to))) await client.delete(to);
+    await client.rename(from, to);
+  }
+}
+
+// --- 0.1.0 additions: filesystem-complete verbs ------------------------------
+
+/** Canonicalize a remote path (resolve ./.. and symlinks to an absolute path). */
+export async function realpath(
+  client: Client,
+  path: string,
+): Promise<{ path: string; realpath: string }> {
+  return { path, realpath: await client.realPath(path) };
+}
+
+/** Stat WITHOUT following a final symlink (reports the link itself). */
+export async function lstatPath(client: Client, path: string): Promise<StatResult> {
+  try {
+    // lstat exists at runtime but isn't in @types/ssh2-sftp-client.
+    const lstat = (client as unknown as { lstat: (p: string) => Promise<unknown> }).lstat;
+    const o = (await lstat.call(client, path)) as Record<string, unknown>;
+    return {
+      exists: true,
+      type: statType(o),
+      size: o.size as number,
+      modifyTime: o.modifyTime as number,
+      accessTime: o.accessTime as number,
+      mode: ((o.mode as number) & 0o777).toString(8),
+    };
+  } catch (e) {
+    if (errorInfo(e).code === "ENOENT") return { exists: false };
+    throw e;
+  }
+}
+
+/** Access the raw ssh2 SFTP stream for ops the wrapper doesn't expose. */
+function raw(client: Client): {
+  symlink: (t: string, p: string, cb: (e: unknown) => void) => void;
+  readlink: (p: string, cb: (e: unknown, t: string) => void) => void;
+  ext_openssh_statvfs?: (p: string, cb: (e: unknown, s: Record<string, number>) => void) => void;
+} {
+  const r = (client as unknown as { sftp?: unknown }).sftp;
+  if (!r) throw codedError("raw SFTP stream unavailable", "EFAILURE");
+  return r as ReturnType<typeof raw>;
+}
+
+/** Create a symbolic link at `path` pointing to `target`. */
+export async function createSymlink(client: Client, target: string, path: string): Promise<void> {
+  const r = raw(client);
+  await promisify(r.symlink.bind(r))(target, path);
+}
+
+/** Read a symlink's target path. */
+export async function readSymlink(client: Client, path: string): Promise<string> {
+  const r = raw(client);
+  return promisify(r.readlink.bind(r))(path);
+}
+
+/** Remote filesystem capacity (OpenSSH statvfs extension). */
+export async function diskUsage(
+  client: Client,
+  path: string,
+): Promise<{ totalBytes: number; freeBytes: number; availableBytes: number }> {
+  const r = raw(client);
+  if (typeof r.ext_openssh_statvfs !== "function") {
+    throw codedError("server does not support the statvfs extension", "ENOSYS");
+  }
+  const s = await promisify(r.ext_openssh_statvfs.bind(r))(path);
+  const bsize = s.f_frsize || s.f_bsize;
+  return {
+    totalBytes: s.f_blocks * bsize,
+    freeBytes: s.f_bfree * bsize,
+    availableBytes: s.f_bavail * bsize,
+  };
+}
+
+export interface TreeFile {
+  /** Path relative to the upload base. */
+  path: string;
+  base64: string;
+}
+
+/** Push a whole directory tree from in-memory base64 files, auto-mkdir -p. */
+export async function uploadTree(
+  client: Client,
+  basePath: string,
+  files: TreeFile[],
+  maxTotalBytes = MAX_BYTES,
+): Promise<{ count: number; written: { path: string; bytes: number }[] }> {
+  const written: { path: string; bytes: number }[] = [];
+  const madeDirs = new Set<string>();
+  let total = 0;
+  const root = basePath.replace(/\/$/, "");
+  // Ensure the base directory exists up front (mkdir -p, idempotent).
+  await client.mkdir(root, true);
+  madeDirs.add(root);
+  for (const f of files) {
+    const buf = Buffer.from(f.base64, "base64");
+    total += buf.length;
+    if (total > maxTotalBytes) {
+      throw codedError(`tree exceeds ${maxTotalBytes} bytes at ${f.path}`, "E2BIG");
+    }
+    const remote = `${root}/${f.path.replace(/^\//, "")}`.replace(/\\/g, "/");
+    const dir = remote.slice(0, remote.lastIndexOf("/"));
+    if (dir && !madeDirs.has(dir)) {
+      await client.mkdir(dir, true);
+      madeDirs.add(dir);
+    }
+    await client.put(buf, remote);
+    written.push({ path: remote, bytes: buf.length });
+  }
+  return { count: written.length, written };
 }

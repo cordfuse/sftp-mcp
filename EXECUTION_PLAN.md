@@ -5,13 +5,16 @@
 > download. Not just upload/download. Node runtime, **stdio + streamable HTTP**,
 > zero native deps.
 
-Status: **built — v0.0.1 ready to publish** (Phases 0–4 done, CI green on Node
-20/22 against a live `atmoz/sftp` service) · Created 2026-07-05 · Home:
-`cordfuse/sftp-mcp` (public) · Package: `@cordfuse/sftp-mcp`
+Status: **v0.0.1 shipped 2026-07-05** (npm + GHCR public, wired into metamcp).
+**v0.1.0 built** — "filesystem-complete + safe-to-expose": +6 tools (`lstat`,
+`realpath`, `read_symlink`, `disk_usage`, `upload_dir`, `symlink`), atomic
+`posixRename` under `move`, structured `{code}` errors, and `--read-only` /
+`--allow` hardening flags. 17 tools total. CI-suite green (9/9 on `atmoz/sftp`);
+all new tool calls UAT-passed 18/18 via a subagent fleet against a real box.
+Created 2026-07-05 · Home: `cordfuse/sftp-mcp` (public) · Package: `@cordfuse/sftp-mcp`
 
 **Publish:** org `NPM_TOKEN` visibility is `all` and this repo is public, so the
-token is delivered — no allow-list step needed (confirmed 2026-07-05). `ship it`
-→ tag `v0.0.1`.
+token is delivered — no allow-list step needed. `ship it` → bump done, tag `v0.1.0`.
 
 ---
 
@@ -200,24 +203,24 @@ sftp-mcp/
 
 ## 10. Post-v1 verb/noun backlog (gap vs native SFTP)
 
-v1 covers the everyday filesystem verbs. Deferred, ranked by value:
+**Shipped in v0.1.0 ✅:** `realpath`, `lstat`, `symlink`+`read_symlink`,
+`posixRename` under `move` (atomic overwrite), the base64-tree `upload_dir`
+(model-safe recursive push, pairs with recursive `download_files`), `disk_usage`
+(`statvfs`), structured `{code}` errors, and `--read-only` / `--allow` hardening.
+
+Still deferred, ranked by value:
 
 **Tier 1 — easy adds (`ssh2-sftp-client` already exposes them):**
-- `realpath` — canonicalize a path (resolve `.`/`..`/symlinks). High value.
-- `lstat` — stat without following symlinks.
-- `symlink` + `readlink` — create / read symlinks (symlink-awareness = table stakes
-  for "filesystem-complete").
 - `append` — append to a file.
-- `posixRename` under `move` — atomic overwrite (strictly better than the current
-  delete-then-rename).
 - `cwd` — server default/home dir.
 
 **Tier 2 — the differentiator:**
-- **Recursive tree sync** (`uploadDir`/`downloadDir`, or a base64-tree variant) —
-  the operation nobody in this category does well. NOTE: the lib's dir-transfer is
-  **host-filesystem ↔ remote** (the MCP server's disk), so it only makes sense for
-  local/stdio deployments; a base64-tree variant would be model-safe.
-- `df` / `statvfs` — filesystem free space (capacity check before big uploads).
+- **Recursive `downloadDir` (host-fs)** — a disk-to-disk pull for stdio-local
+  deployments (the model-safe base64 pull already exists via recursive
+  `download_files`). NOTE: the lib's dir-transfer is **host-filesystem ↔ remote**,
+  so it only makes sense for local/stdio.
+- Connection **pooling/reuse** — currently connect-per-call; add a keyed idle
+  cache if reconnect latency bites in multi-op agent flows.
 
 **Tier 3 — needs raw `ssh2`, niche:**
 - `chown`/`chgrp` (usually root), `setstat` times (`touch`), `truncate`,
