@@ -452,7 +452,9 @@ what credentials a call carries.
   (permission denied / outside the [path jail](#hardening--read-only-mode--path-jail)),
   `EEXIST` (exists without `overwrite`), `EROFS` ([read-only mode](#hardening--read-only-mode--path-jail)),
   `EISDIR`, `ENOTDIR`, `ENOSYS` (unsupported extension, e.g. `disk_usage`),
-  `E2BIG` (over the size cap), `EINVAL`, `EFAILURE` (fallback).
+  `E2BIG` (a batch/tree selection over the combined size cap — a single-file
+  cap surfaces its message under `EFAILURE`), `EINVAL` (bad `mode`), `EFAILURE`
+  (fallback).
 - **Connections** are opened per call and **always closed** (even on error), with
   the `timeoutMs` ready-timeout applied.
 
@@ -499,7 +501,7 @@ npm ci
 npm run build -w @cordfuse/sftp-mcp
 # tests need a live SFTP server:
 docker run -d --name sftp-test -p 2222:22 atmoz/sftp foo:testpass:1001::upload
-npm test  -w @cordfuse/sftp-mcp        # override with SFTP_HOST/PORT/USER/PASS
+npm test -w @cordfuse/sftp-mcp         # override with SFTP_HOST/PORT/USER/PASS
 ```
 
 ## CI / Release
