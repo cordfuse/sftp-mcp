@@ -9,9 +9,9 @@ Status: **built — v0.0.1 ready to publish** (Phases 0–4 done, CI green on No
 20/22 against a live `atmoz/sftp` service) · Created 2026-07-05 · Home:
 `cordfuse/sftp-mcp` (public) · Package: `@cordfuse/sftp-mcp`
 
-**Before first publish:** add `sftp-mcp` to the org `NPM_TOKEN` selected-repo
-allow-list (new publisher repo — otherwise the token arrives empty, per the
-barcoding-mcp lesson). Then `ship it` → tag `v0.0.1`.
+**Publish:** org `NPM_TOKEN` visibility is `all` and this repo is public, so the
+token is delivered — no allow-list step needed (confirmed 2026-07-05). `ship it`
+→ tag `v0.0.1`.
 
 ---
 
@@ -197,6 +197,35 @@ sftp-mcp/
 3. Base — **port `sftp-rest`'s domain logic**, modernize libs, close the gaps.
 4. Transports — **stdio + streamable HTTP**.
 5. Runtime — **Node + TypeScript**, zero native deps.
+
+## 10. Post-v1 verb/noun backlog (gap vs native SFTP)
+
+v1 covers the everyday filesystem verbs. Deferred, ranked by value:
+
+**Tier 1 — easy adds (`ssh2-sftp-client` already exposes them):**
+- `realpath` — canonicalize a path (resolve `.`/`..`/symlinks). High value.
+- `lstat` — stat without following symlinks.
+- `symlink` + `readlink` — create / read symlinks (symlink-awareness = table stakes
+  for "filesystem-complete").
+- `append` — append to a file.
+- `posixRename` under `move` — atomic overwrite (strictly better than the current
+  delete-then-rename).
+- `cwd` — server default/home dir.
+
+**Tier 2 — the differentiator:**
+- **Recursive tree sync** (`uploadDir`/`downloadDir`, or a base64-tree variant) —
+  the operation nobody in this category does well. NOTE: the lib's dir-transfer is
+  **host-filesystem ↔ remote** (the MCP server's disk), so it only makes sense for
+  local/stdio deployments; a base64-tree variant would be model-safe.
+- `df` / `statvfs` — filesystem free space (capacity check before big uploads).
+
+**Tier 3 — needs raw `ssh2`, niche:**
+- `chown`/`chgrp` (usually root), `setstat` times (`touch`), `truncate`,
+  random-range read/write, `reget`/`reput` (resumable — the core if we ever build
+  large-tree sync).
+
+**Not native (fair to omit):** server-side `copy` (no v3 primitive), `hardlink`
+(v6/extension).
 
 ---
 
