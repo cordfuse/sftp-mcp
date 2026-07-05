@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22]
+    services:
+      sftp:
+        image: atmoz/sftp
+        env:
+          SFTP_USERS: foo:testpass:1001::upload
+        ports:
+          - 2222:22
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run typecheck -w @cordfuse/sftp-mcp
+      - run: npm run build -w @cordfuse/sftp-mcp
+      - name: Wait for SFTP server
+        run: |
+          for i in $(seq 1 30); do
+            if timeout 2 bash -c '</dev/tcp/127.0.0.1/2222' 2>/dev/null; then
+              echo "sftp ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "sftp did not become ready"; exit 1
+      - run: npm test -w @cordfuse/sftp-mcp
+        env:
+          SFTP_HOST: 127.0.0.1
+          SFTP_PORT: 2222
+          SFTP_USER: foo
+          SFTP_PASS: testpass

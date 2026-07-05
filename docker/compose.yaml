@@ -1,0 +1,21 @@
+services:
+  sftp-mcp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: sftp-mcp:latest
+    container_name: sftp-mcp
+    environment:
+      - PORT=3901
+    ports:
+      - "3901:3901"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:3901/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
