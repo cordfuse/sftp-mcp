@@ -1,0 +1,9 @@
+{
+  "name": "sftp-mcp",
+  "private": true,
+  "version": "0.0.0",
+  "description": "SFTP-as-a-filesystem MCP server — monorepo root (unpublished)",
+  "workspaces": [
+    "packages/*"
+  ]
+}
