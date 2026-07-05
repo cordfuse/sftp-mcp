@@ -74,6 +74,13 @@ Creds are passed **in the tool call**, not configured server-side. Chosen for
 ad-hoc multi-host flexibility and statelessness (the server holds no secrets at
 rest). Connection params (host / port / username) are per-call.
 
+**Multi-server, real-time (a direct consequence of per-call creds):** because every
+call fully specifies its target, the agent can talk to **any number of SFTP servers,
+switched call-to-call, with no registration and no restart.** There is no "configure
+servers" step — you name the server in the call. (Optional later perf: a connection
+cache keyed by `(host, port, user)` with idle-eviction so repeat calls to the same
+host reuse a warm connection — still unlimited servers, still no config. Out of v1.)
+
 The **secret is supplied two ways**, caller's choice:
 - **Inline** — password, or private-key bytes, in the call. Max flexibility;
   accepts that the secret transits the model context.
