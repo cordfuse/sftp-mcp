@@ -68,35 +68,48 @@ FTP/SFTP client abstraction.
 - **Transports:** stdio (default) + streamable HTTP (`--http [--port N]`,
   stateful sessions, `GET /health`) — same pattern as `barcoding-mcp`.
 
-## 4. Credential model — per-call, with an escape hatch (DECIDED)
+## 4. Credential model — 100% per-call, zero config (DECIDED)
 
-Creds are passed **in the tool call**, not configured server-side. Chosen for
-ad-hoc multi-host flexibility and statelessness (the server holds no secrets at
-rest). Connection params (host / port / username) are per-call.
+Everything is passed **in the tool call**. There is **no server-side config** — no
+key store, no profiles, no guardrail env vars. Chosen for ad-hoc multi-host
+flexibility, statelessness (the server holds nothing at rest), and the smallest
+possible surface. Connection params (host / port / username) and the secret are
+all per-call.
 
-**Multi-server, real-time (a direct consequence of per-call creds):** because every
-call fully specifies its target, the agent can talk to **any number of SFTP servers,
-switched call-to-call, with no registration and no restart.** There is no "configure
-servers" step — you name the server in the call. (Optional later perf: a connection
-cache keyed by `(host, port, user)` with idle-eviction so repeat calls to the same
-host reuse a warm connection — still unlimited servers, still no config. Out of v1.)
+**Multi-server, real-time (a direct consequence):** because every call fully
+specifies its target, the agent can talk to **any number of SFTP servers, switched
+call-to-call, with no registration and no restart.** There is no "configure servers"
+step — you name the server in the call. (Optional later perf: a connection cache
+keyed by `(host, port, user)` with idle-eviction so repeat calls to the same host
+reuse a warm connection — still unlimited servers, still no config. Out of v1.)
 
-The **secret is supplied two ways**, caller's choice:
-- **Inline** — password, or private-key bytes, in the call. Max flexibility;
-  accepts that the secret transits the model context.
-- **By-reference** — a private-key **path the server reads**, or a short profile
-  name. Keeps per-call flexibility while the raw key material never passes
-  through the model.
+**The secret in a call is optional, with two ways to supply it:**
+- **Inline** — password, or private-key bytes (+ optional passphrase), in the call.
+  Max flexibility; accepts that the secret transits the model context.
+- **Omitted → local SSH fallback** — if no secret is given, the server uses the
+  local **ssh-agent / `~/.ssh` default key**. Still 100% per-call (the call names
+  host+user, just no secret), idiomatic for SSH users, and it keeps private-key
+  material **out of the model** for the local/stdio case. The one real security
+  affordance in a no-config world. (Meaningful only for stdio, where the server
+  runs on the user's machine — a remote container has no user ssh-agent.)
 
-**Mitigations (mandatory regardless):**
-- Never log credentials — redact in all error/trace/log output.
-- Sanitize errors surfaced to the model (no stacks, internal paths, or host
-  fingerprints).
-- **Document the exposure plainly.** ⚠️ Inline secrets transit the model context,
-  the client transcript, and — if fronted by the public `mcp.crosstalk.sh`
-  metamcp endpoint — that proxy chain. Public-endpoint deployment with inline
-  secrets is a conscious choice; by-reference or a private stdio deployment is the
-  safe default for anything sensitive.
+**Built-in safe defaults (constants, not config):**
+- **Max transfer size** — a sane cap (per-call overridable) so an agent can't OOM
+  the server with a huge base64 blob.
+- **Never log credentials** — redact in all error/trace/log output.
+- **Sanitized errors** to the model (no stacks, internal paths, host fingerprints).
+
+**Security is documented, not configured** — and it maps onto the transport:
+- **stdio = the safe mode for inline secrets** — server runs locally as a child of
+  your client; the secret never leaves your machine. Use this (or the ssh-agent
+  fallback) for anything sensitive.
+- **⚠️ streamable HTTP behind a public tunnel** (e.g. `mcp.crosstalk.sh`) — inline
+  secrets transit the network + proxy chain. **Do not put inline passwords through
+  a public endpoint.** This is the one combination to avoid.
+
+Deferred (add only if a shared-endpoint operator actually asks — YAGNI for v1):
+read-only mode, path allow/deny jail, host allowlist. All would be launch flags,
+not per-call.
 
 ## 5. Tools
 
@@ -164,8 +177,9 @@ sftp-mcp/
 - No remote command execution (that's the incumbent's lane; we're the filesystem).
   Revisit only if a real need appears.
 - No Python, no native addons.
-- No server-side credential store as the *primary* model (per-call is the design);
-  by-reference/profiles are the escape hatch, not the default.
+- **No server-side config at all** — 100% per-call. The only secret-optional path
+  is the local ssh-agent / `~/.ssh` fallback (stdio). Guardrails (read-only, path
+  jail, host allowlist) are deferred, not part of v1.
 - FTP is **secondary** — kept because `sftp-rest` had it and it's cheap, but SFTP
   is the product. FTP is legacy/insecure; documented as such.
 
@@ -173,7 +187,8 @@ sftp-mcp/
 
 1. Name — **`cordfuse/sftp-mcp`** / `@cordfuse/sftp-mcp`, functional for
    discoverability; filesystem wedge lives in the tagline.
-2. Creds — **per-call**, secret inline **or** by-reference; never logged.
+2. Creds — **100% per-call, zero server config**; secret inline **or** omitted →
+   local ssh-agent/`~/.ssh` fallback (stdio); never logged; built-in size cap.
 3. Base — **port `sftp-rest`'s domain logic**, modernize libs, close the gaps.
 4. Transports — **stdio + streamable HTTP**.
 5. Runtime — **Node + TypeScript**, zero native deps.
