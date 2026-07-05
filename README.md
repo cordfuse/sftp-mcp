@@ -67,6 +67,28 @@ tables below to avoid repetition.
 neither is given, the local **ssh-agent / default `~/.ssh` key** (stdio only).
 See [Credentials](#credentials--100-per-call-zero-config).
 
+**Authenticating a call.** Every tool takes exactly one of these three forms.
+The same auth fields apply to *every* tool (shown here on `test_connection`):
+
+```jsonc
+// 1. Private key — preferred
+{
+  "host": "sftp.example.com", "username": "deploy",
+  "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n…\n-----END OPENSSH PRIVATE KEY-----",
+  "passphrase": "only-if-the-key-is-encrypted"
+}
+
+// 2. Password
+{ "host": "sftp.example.com", "username": "deploy", "password": "s3cr3t" }
+
+// 3. No secret → local ssh-agent / ~/.ssh key (stdio only; keeps keys out of the model)
+{ "host": "sftp.example.com", "username": "deploy" }
+```
+
+> The per-tool examples below **omit the secret for brevity** — they assume
+> form 3 (local key). For explicit auth, add `privateKey` (form 1, preferred) or
+> `password` (form 2) to any of them.
+
 `FileType` (used below) is one of: `"file"`, `"directory"`, `"symlink"`,
 `"other"`.
 
