@@ -5,8 +5,13 @@
 > download. Not just upload/download. Node runtime, **stdio + streamable HTTP**,
 > zero native deps.
 
-Status: **planning** · Created 2026-07-05 · Home: `cordfuse/sftp-mcp` (public) ·
-Package: `@cordfuse/sftp-mcp`
+Status: **built — v0.0.1 ready to publish** (Phases 0–4 done, CI green on Node
+20/22 against a live `atmoz/sftp` service) · Created 2026-07-05 · Home:
+`cordfuse/sftp-mcp` (public) · Package: `@cordfuse/sftp-mcp`
+
+**Before first publish:** add `sftp-mcp` to the org `NPM_TOKEN` selected-repo
+allow-list (new publisher repo — otherwise the token arrives empty, per the
+barcoding-mcp lesson). Then `ship it` → tag `v0.0.1`.
 
 ---
 
